@@ -46,6 +46,8 @@ Both assume **white-background scanners** (background is near-white to light gra
 
 - ADF では、スキャン範囲を紙より 5mm ほど大きく設定してください（余白部分でスジを検出するため）。/
   For ADF scans, set the scan area about 5mm larger than the paper (streaks are detected in the margin region).
+- 原稿はノド（綴じ側）を上にした横向きで ADF に給紙して、ドライバで回転させてください。これによりスジが横方向に出るため、左右の余白で検出できます。
+  Feed pages sideways into the ADF with the gutter (binding edge) facing up, and set rotate in driver. This makes streaks run horizontally, so they can be detected in the left/right margins.
 - Python 3.10 以上 / Python 3.10+
 - 依存ライブラリ / Dependencies: `opencv-python`, `numpy`, `scipy`
 
