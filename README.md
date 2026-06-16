@@ -16,6 +16,8 @@ Claude Opus 4.7 が書きました。
 
 `suji-venator` ("suji" = streak, Latin "venator" = hunter) is a post-processing tool for self-scanned book images. Its primary purpose is to **detect and flag streaks** caused by debris on the rollers or glass surface of ADF (Auto Document Feeder) scanners. It also automatically crops the scanner-background margins and corrects page skew.
 
+![sampleImage](sample.png)
+
 ---
 
 ## 特徴 / Features
