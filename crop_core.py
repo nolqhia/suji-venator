@@ -94,6 +94,7 @@ class ProcessResult:
     success: bool
     error_msg: str = ""
     log_lines: list = field(default_factory=list)
+    edges_failed: list = field(default_factory=list)  # 検出失敗した辺 (フォールバック)
 
 CORNER_SIZE = 40
 OUTER_SKIP_PX = 15
@@ -525,6 +526,16 @@ def process_image(input_path_str: str, output_dir_str: str,
     y1 = edges.top.position if edges.top.detected else 0
     y2 = edges.bottom.position if edges.bottom.detected else hf
 
+    # 安全網: 検出に失敗した辺は画像端へ無言でフォールバックしており、
+    # 余白 (背景) が残るクロップミスになりやすい。該当があれば警告し、
+    # 出力名に -edge を付けて後で目視確認できるようにする。
+    edges_failed = [nm for nm, e in [("左", edges.left), ("右", edges.right),
+                                     ("上", edges.top), ("下", edges.bottom)]
+                    if not e.detected]
+    if edges_failed:
+        log.append(f"  ⚠ エッジ検出失敗: {'/'.join(edges_failed)} "
+                   f"→ 画像端にフォールバック (要確認)")
+
     m = prof.adf_margin_px
     if m > 0:
         x1 += m; x2 -= m; y1 += m; y2 -= m
@@ -539,10 +550,11 @@ def process_image(input_path_str: str, output_dir_str: str,
     cw, ch = cropped.shape[1], cropped.shape[0]
     ar = cw / ch if ch > 0 else 0.0
 
-    if has_streaks and not stem.endswith("-line"):
-        out_stem = f"{stem}-line"
-    else:
-        out_stem = stem
+    out_stem = stem
+    if has_streaks and not out_stem.endswith("-line"):
+        out_stem = f"{out_stem}-line"
+    if edges_failed and "-edge" not in out_stem:
+        out_stem = f"{out_stem}-edge"
 
     output_name = f"{out_stem}.png"
     output_path = output_dir / output_name
@@ -552,7 +564,8 @@ def process_image(input_path_str: str, output_dir_str: str,
     log.append(f"  出力: {output_name} ({cw}x{ch}, AR={ar:.4f}, -{pct:.1f}%)")
 
     return ProcessResult(filename, output_name, str(output_path), (w,h), (cw,ch),
-                         tilt, tilt_corrected, edges_info, streaks, ar, True, "", log)
+                         tilt, tilt_corrected, edges_info, streaks, ar, True, "", log,
+                         edges_failed)
 
 # ============================================================
 # アス比・面積チェック
@@ -633,8 +646,10 @@ def write_log(results: list[ProcessResult], outlier_log: list[str],
         s_count = sum(1 for r in results if r.success)
         e_count = sum(1 for r in results if not r.success)
         st_count = sum(1 for r in results if r.streaks)
+        ed_count = sum(1 for r in results if r.edges_failed)
         f.write(f"合計: {len(results)} "
-                f"(成功: {s_count}, エラー: {e_count}, スジ: {st_count})\n")
+                f"(成功: {s_count}, エラー: {e_count}, スジ: {st_count}, "
+                f"エッジ検出失敗: {ed_count})\n")
 
         # エラー一覧
         errors = [r for r in results if not r.success]
@@ -647,6 +662,13 @@ def write_log(results: list[ProcessResult], outlier_log: list[str],
         if streak_files:
             for r in streak_files:
                 f.write(f"  [スジ] {r.input_name} → {r.output_name}\n")
+
+        # エッジ検出失敗一覧 (画像端へフォールバック=クロップミスの可能性)
+        edge_files = [r for r in results if r.edges_failed]
+        if edge_files:
+            for r in edge_files:
+                f.write(f"  [エッジ] {r.input_name} → {r.output_name} "
+                        f"(失敗辺: {'/'.join(r.edges_failed)})\n")
 
         # アス比・面積外れ値
         if outlier_log:
@@ -758,6 +780,9 @@ def run(prof: ScannerProfile, version: str):
     s = sum(1 for r in results if r.success)
     e = sum(1 for r in results if not r.success)
     st = sum(1 for r in results if r.streaks)
+    ed = sum(1 for r in results if r.edges_failed)
     print(f"\n{'='*60}")
-    print(f"完了: {s} 成功, {e} エラー, {st} スジ検出")
+    print(f"完了: {s} 成功, {e} エラー, {st} スジ検出, {ed} エッジ検出失敗")
+    if ed:
+        print(f"⚠ エッジ検出失敗 {ed} 件 (出力名 -edge)。クロップを確認してください。")
     print(f"結果ログ: {log_path}")

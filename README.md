@@ -106,6 +106,7 @@ Suffixes are appended to output filenames based on detected issues.
 | 接尾辞 / Suffix | 意味 / Meaning |
 |---|---|
 | `-line` | スジを検出 / Streak detected |
+| `-edge` | 紙面端の検出に失敗し画像端でフォールバック / Edge detection failed (fell back to image border) |
 | `-ratio` | アスペクト比が外れ値 / Aspect ratio outlier |
 | `-size` | 面積が外れ値 / Area (size) outlier |
 
