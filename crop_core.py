@@ -43,6 +43,7 @@ class ScannerProfile:
     adf_margin_px: int
     enable_ratio_check: bool
     ratio_sigma: float
+    color_dist_threshold: float = 25.0  # カラー入力時の背景色距離しきい値
 
 @dataclass
 class StreakInfo:
@@ -97,7 +98,12 @@ class ProcessResult:
 CORNER_SIZE = 40
 OUTER_SKIP_PX = 15
 SCAN_DEPTH = 500
-N_SAMPLES = 16
+N_SAMPLES = 48
+# クロップ位置は紙面境界の中央値ではなく内側寄りのパーセンタイルを使う。
+# 紙が僅かに歪む/湾曲すると横エッジが完全な水平にならず、中央値で切ると
+# 片側にグレーの楔が残る。内側寄せで残グレーを抑える (歪みが無ければ
+# 全サンプル同値なので中央値と一致し、余計なロスは出ない)。
+CROP_INWARD_PCT = 92
 
 # ============================================================
 # グレースケール変換
@@ -131,16 +137,37 @@ def estimate_background(gray: np.ndarray) -> float:
     ])
     return float(np.median(corners))
 
+
+def estimate_background_color(img: np.ndarray) -> np.ndarray:
+    """コーナー4隅の BGR 中央値を背景色として返す (カラー入力用)。
+    グレースケールでは背景と等輝度でも、色付き紙は色距離で分離できる。
+    BGRA は先頭3チャンネル (BGR) のみ使用。
+    """
+    bgr = img[:, :, :3]
+    h, w = bgr.shape[:2]
+    cs = min(CORNER_SIZE, h // 10, w // 10)
+    corners = np.concatenate([
+        bgr[:cs, :cs].reshape(-1, 3), bgr[:cs, -cs:].reshape(-1, 3),
+        bgr[-cs:, :cs].reshape(-1, 3), bgr[-cs:, -cs:].reshape(-1, 3),
+    ]).astype(np.float64)
+    return np.median(corners, axis=0)
+
 # ============================================================
 # エッジ検出
 # ============================================================
 
 def _detect_edge_one_side(gray: np.ndarray, side: str,
-                          bg_med: float, prof: ScannerProfile) -> EdgeResult:
+                          bg_med: float, prof: ScannerProfile,
+                          img_color: np.ndarray = None,
+                          bg_color: np.ndarray = None) -> EdgeResult:
     """1辺のエッジを検出。
-    Stage 1: 外側から走査し影範囲外(=紙面)を見つける
+    Stage 1: 外側から走査し「紙面」の最初のピクセルを見つける
     Stage 2: first_paper から外側方向にディップ(影の最深部)を探す
              ディップがあればそこでクロップ(影を完全除去)
+
+    紙面判定 (is_paper) は輝度が背景帯の外にあるか、または
+    (カラー入力時) 背景色からの色距離が閾値を超える場合に真。
+    水色の紙のように背景グレーと等輝度でも、色距離で分離できる。
     """
     h, w = gray.shape
     s_low = bg_med - prof.shadow_range_low
@@ -148,6 +175,8 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
     dip_thresh = bg_med - prof.shadow_dip_threshold
     dip_search = prof.shadow_dip_search
     depth = min(SCAN_DEPTH, (w if side in ("left", "right") else h) // 2)
+    use_color = img_color is not None and bg_color is not None
+    color_thresh = prof.color_dist_threshold
 
     is_horiz = side in ("left", "right")
     sample_positions = np.linspace(
@@ -161,13 +190,21 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
         line = gray[idx, :].astype(float) if is_horiz else gray[:, idx].astype(float)
         length = len(line)
 
-        # Stage 1: 外側から走査し、影範囲外の最初のピクセルを見つける
-        if side == "left":
-            scan_range = range(OUTER_SKIP_PX, OUTER_SKIP_PX + depth)
-        elif side == "right":
-            scan_range = range(length - OUTER_SKIP_PX - 1,
-                               length - OUTER_SKIP_PX - depth - 1, -1)
-        elif side == "top":
+        # 紙面判定マスク。
+        # カラー入力: 背景色からの色距離で判定 (水色の紙など等輝度でも分離可能)。
+        #   輝度帯との OR にすると、背景グレーの明るさノイズが bg+3 を誤って踏み、
+        #   真の紙面に達する前に検出が止まってグレーが残るため、色距離のみを使う。
+        # グレースケール入力: 従来どおり輝度が背景帯の外か。
+        if use_color:
+            cline = (img_color[idx, :, :3] if is_horiz
+                     else img_color[:, idx, :3]).astype(np.float64)
+            cdist = np.sqrt(((cline - bg_color) ** 2).sum(axis=1))
+            is_paper = cdist > color_thresh
+        else:
+            is_paper = (line < s_low) | (line > s_high)
+
+        # Stage 1: 外側から走査し、紙面の最初のピクセルを見つける
+        if side in ("left", "top"):
             scan_range = range(OUTER_SKIP_PX, OUTER_SKIP_PX + depth)
         else:
             scan_range = range(length - OUTER_SKIP_PX - 1,
@@ -175,8 +212,7 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
 
         first_paper = None
         for i in scan_range:
-            val = line[i]
-            if val < s_low or val > s_high:
+            if is_paper[i]:
                 first_paper = i
                 break
 
@@ -198,7 +234,7 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
                 # ディップから紙面方向 (左) へ走査して紙面端を探す
                 found = False
                 for j in range(dip_pos - 1, max(dip_pos - dip_search, 0), -1):
-                    if line[j] < s_low or line[j] > s_high:
+                    if is_paper[j]:
                         samples.append((int(idx), j))
                         found = True
                         break
@@ -211,20 +247,23 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
             samples.append((int(idx), first_paper))
 
     if len(samples) >= N_SAMPLES * 0.4:
-        positions = [p for _, p in samples]
-        return EdgeResult(int(np.median(positions)), True, samples)
+        positions = np.array([p for _, p in samples])
+        # 紙面の内側寄りで切ってグレーの楔を残さない
+        q = CROP_INWARD_PCT if side in ("left", "top") else 100 - CROP_INWARD_PCT
+        return EdgeResult(int(np.percentile(positions, q)), True, samples)
 
     fallback = {"left": 0, "right": w - 1, "top": 0, "bottom": h - 1}[side]
     return EdgeResult(fallback, False)
 
 
-def detect_all_edges(gray: np.ndarray, bg_med: float,
-                     prof: ScannerProfile) -> Edges:
+def detect_all_edges(gray: np.ndarray, bg_med: float, prof: ScannerProfile,
+                     img_color: np.ndarray = None,
+                     bg_color: np.ndarray = None) -> Edges:
     return Edges(
-        left=_detect_edge_one_side(gray, "left", bg_med, prof),
-        right=_detect_edge_one_side(gray, "right", bg_med, prof),
-        top=_detect_edge_one_side(gray, "top", bg_med, prof),
-        bottom=_detect_edge_one_side(gray, "bottom", bg_med, prof),
+        left=_detect_edge_one_side(gray, "left", bg_med, prof, img_color, bg_color),
+        right=_detect_edge_one_side(gray, "right", bg_med, prof, img_color, bg_color),
+        top=_detect_edge_one_side(gray, "top", bg_med, prof, img_color, bg_color),
+        bottom=_detect_edge_one_side(gray, "bottom", bg_med, prof, img_color, bg_color),
     )
 
 # ============================================================
@@ -415,13 +454,22 @@ def process_image(input_path_str: str, output_dir_str: str,
 
     gray = to_gray(img)
     h, w = gray.shape
-    cm = "カラー" if len(img.shape) == 3 else "グレースケール"
+    is_color = img.ndim == 3 and img.shape[2] >= 3
+    cm = "カラー" if is_color else "グレースケール"
     log.append(f"処理中: {filename} ({w}x{h}, {cm})")
 
     bg_med = estimate_background(gray)
-    log.append(f"  背景色: {bg_med:.0f}")
+    # カラー入力では背景色 (BGR) も推定し、色距離で紙面を分離する。
+    # 回転後は黒縁で隅が汚れるため、この bg_color を再利用する。
+    bg_color = estimate_background_color(img) if is_color else None
+    if is_color:
+        log.append(f"  背景色: gray={bg_med:.0f}, BGR=({bg_color[0]:.0f},"
+                   f"{bg_color[1]:.0f},{bg_color[2]:.0f})")
+    else:
+        log.append(f"  背景色: {bg_med:.0f}")
 
-    edges = detect_all_edges(gray, bg_med, prof)
+    edges = detect_all_edges(gray, bg_med, prof,
+                             img if is_color else None, bg_color)
     edges_info = {}
     for name, e in [("左", edges.left), ("右", edges.right),
                     ("上", edges.top), ("下", edges.bottom)]:
@@ -448,7 +496,8 @@ def process_image(input_path_str: str, output_dir_str: str,
         log.append(f"  傾き補正: {tilt:.4f}°")
         img = rotate_image(img, tilt)
         gray = to_gray(img)
-        edges = detect_all_edges(gray, bg_med, prof)
+        edges = detect_all_edges(gray, bg_med, prof,
+                                 img if is_color else None, bg_color)
         tilt_corrected = True
         h2, w2 = gray.shape
         log.append(f"  再検出 (回転後 {w2}x{h2}):")

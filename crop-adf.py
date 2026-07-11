@@ -23,6 +23,7 @@ PROFILE = ScannerProfile(
     adf_margin_px=8,
     enable_ratio_check=True,
     ratio_sigma=3.0,
+    color_dist_threshold=25.0,
 )
 
 if __name__ == "__main__":
