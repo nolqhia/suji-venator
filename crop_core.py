@@ -191,15 +191,24 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
         length = len(line)
 
         # 紙面判定マスク。
-        # カラー入力: 背景色からの色距離で判定 (水色の紙など等輝度でも分離可能)。
-        #   輝度帯との OR にすると、背景グレーの明るさノイズが bg+3 を誤って踏み、
-        #   真の紙面に達する前に検出が止まってグレーが残るため、色距離のみを使う。
-        # グレースケール入力: 従来どおり輝度が背景帯の外か。
+        # カラー入力では、背景からの単純な RGB 距離を使うと、紙面直前の
+        # 無彩色な落ち影まで紙として検出してしまう。そこで明るさ成分を
+        # 除いた色差を使い、無彩色の紙は輝度差で補完する。
+        # 明るい側のしきい値には色距離相当の下限を設け、背景グレーの
+        # 小さな明るさノイズで走査が止まらないようにする。
         if use_color:
             cline = (img_color[idx, :, :3] if is_horiz
                      else img_color[:, idx, :3]).astype(np.float64)
-            cdist = np.sqrt(((cline - bg_color) ** 2).sum(axis=1))
-            is_paper = cdist > color_thresh
+            color_delta = cline - bg_color
+            chroma_delta = color_delta - color_delta.mean(axis=1, keepdims=True)
+            chroma_dist = np.sqrt((chroma_delta ** 2).sum(axis=1))
+            bright_threshold = max(prof.shadow_range_high,
+                                   color_thresh / np.sqrt(3.0))
+            is_paper = (
+                (line < s_low)
+                | (line > bg_med + bright_threshold)
+                | (chroma_dist > color_thresh)
+            )
         else:
             is_paper = (line < s_low) | (line > s_high)
 
