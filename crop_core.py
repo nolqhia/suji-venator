@@ -16,7 +16,7 @@ import numpy as np
 
 HAS_SCIPY = False
 try:
-    from scipy.ndimage import median_filter as _mf
+    from scipy.ndimage import median_filter
     HAS_SCIPY = True
 except ImportError:
     pass
@@ -45,10 +45,31 @@ class ScannerProfile:
     ratio_sigma: float
 
 @dataclass
+class StreakInfo:
+    """検出したスジの構造化情報"""
+    orientation: str   # "horizontal" (横スジ) / "vertical" (縦スジ)
+    side: str          # "left"/"right" (横スジ) または "top"/"bottom" (縦スジ)
+    start: int         # 横スジ: 開始row / 縦スジ: 開始col
+    end: int           # 横スジ: 終了row / 縦スジ: 終了col
+    length: int        # スジの長さ (px)
+    max_dev: float     # 最大輝度偏差
+
+    def describe(self) -> str:
+        if self.orientation == "horizontal":
+            return (f"  横スジ: rows {self.start}-{self.end} "
+                    f"(幅{self.end - self.start + 1}px, 長さ~{self.length}px, "
+                    f"偏差{self.max_dev:.1f})")
+        else:
+            return (f"  縦スジ: cols {self.start}-{self.end} "
+                    f"(幅{self.end - self.start + 1}px, 長さ~{self.length}px, "
+                    f"偏差{self.max_dev:.1f})")
+
+
+@dataclass
 class EdgeResult:
     position: int
     detected: bool
-    samples: list = field(default_factory=list)
+    samples: list = field(default_factory=list)  # (走査位置, エッジ位置) のペア
 
 @dataclass
 class Edges:
@@ -77,6 +98,25 @@ CORNER_SIZE = 40
 OUTER_SKIP_PX = 15
 SCAN_DEPTH = 500
 N_SAMPLES = 16
+
+# ============================================================
+# グレースケール変換
+# ============================================================
+
+def to_gray(img: np.ndarray) -> np.ndarray:
+    """検出用の 8-bit グレースケールに変換。
+    アルファ付き (BGRA) と 16-bit 入力にも対応する。
+    クロップ自体は元の img に対して行うため、bit深度・チャンネルは保持される。
+    """
+    if img.ndim == 3 and img.shape[2] == 4:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+    elif img.ndim == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img.copy()
+    if gray.dtype == np.uint16:
+        gray = (gray >> 8).astype(np.uint8)
+    return gray
 
 # ============================================================
 # 背景色推定
@@ -159,19 +199,20 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
                 found = False
                 for j in range(dip_pos - 1, max(dip_pos - dip_search, 0), -1):
                     if line[j] < s_low or line[j] > s_high:
-                        samples.append(j)
+                        samples.append((int(idx), j))
                         found = True
                         break
                 if not found:
-                    samples.append(first_paper)
+                    samples.append((int(idx), first_paper))
             else:
-                samples.append(first_paper)
+                samples.append((int(idx), first_paper))
         else:
             # LEFT/TOP/BOTTOM: first_paper をそのまま使用
-            samples.append(first_paper)
+            samples.append((int(idx), first_paper))
 
     if len(samples) >= N_SAMPLES * 0.4:
-        return EdgeResult(int(np.median(samples)), True, samples)
+        positions = [p for _, p in samples]
+        return EdgeResult(int(np.median(positions)), True, samples)
 
     fallback = {"left": 0, "right": w - 1, "top": 0, "bottom": h - 1}[side]
     return EdgeResult(fallback, False)
@@ -190,7 +231,7 @@ def detect_all_edges(gray: np.ndarray, bg_med: float,
 # 傾き推定
 # ============================================================
 
-def estimate_tilt(edges: Edges, h: int, w: int) -> float:
+def estimate_tilt(edges: Edges) -> float:
     angles = []
     for edge, is_vert in [
         (edges.left, True), (edges.right, True),
@@ -198,18 +239,18 @@ def estimate_tilt(edges: Edges, h: int, w: int) -> float:
     ]:
         if not edge.detected or len(edge.samples) < 4:
             continue
-        dim = h if is_vert else w
-        indices = np.linspace(dim // 5, 4 * dim // 5, len(edge.samples))
-        values = np.array(edge.samples)
-        if len(indices) < 4:
-            continue
+        pts = np.array(edge.samples, dtype=float)
+        indices, values = pts[:, 0], pts[:, 1]
         q1, q3 = np.percentile(values, [25, 75])
         iqr = q3 - q1
         mask = (values >= q1 - 1.5 * iqr) & (values <= q3 + 1.5 * iqr)
         if mask.sum() < 4:
             continue
         fit = np.polyfit(indices[mask], values[mask], 1)
-        angles.append(np.degrees(np.arctan(fit[0])))
+        ang = np.degrees(np.arctan(fit[0]))
+        # 紙が θ 回転すると縦エッジの dx/dy は -tanθ、横エッジの dy/dx は
+        # +tanθ になる。符号を揃えないと median で打ち消し合う。
+        angles.append(ang if is_vert else -ang)
     return float(np.median(angles)) if angles else 0.0
 
 # ============================================================
@@ -237,18 +278,18 @@ def rotate_image(img: np.ndarray, angle_deg: float) -> np.ndarray:
 # スジ検出
 # ============================================================
 
-def detect_streaks(gray: np.ndarray, prof: ScannerProfile) -> list[str]:
+def detect_streaks(gray: np.ndarray, prof: ScannerProfile) -> list[StreakInfo]:
     if not prof.enable_streak or not HAS_SCIPY:
         return []
-    from scipy.ndimage import median_filter
     h, w = gray.shape
-    warnings = []
+    found = []
     sw = prof.streak_strip_width
     th = prof.streak_threshold
 
-    for region in [
-        gray[:, OUTER_SKIP_PX:OUTER_SKIP_PX + sw],
-        gray[:, w - OUTER_SKIP_PX - sw:w - OUTER_SKIP_PX],
+    # 横スジ: 左右ストリップで検出
+    for side, region in [
+        ("left", gray[:, OUTER_SKIP_PX:OUTER_SKIP_PX + sw]),
+        ("right", gray[:, w - OUTER_SKIP_PX - sw:w - OUTER_SKIP_PX]),
     ]:
         if region.size == 0 or region.shape[1] < 5:
             continue
@@ -270,13 +311,15 @@ def detect_streaks(gray: np.ndarray, prof: ScannerProfile) -> list[str]:
                 else np.full(w, means.mean())
             extent = np.where(np.abs(c_means - (ref_a+ref_b)/2) > th/2)[0]
             if len(extent) > w * prof.streak_min_length_ratio:
-                warnings.append(
-                    f"  横スジ: rows {g[0]}-{g[-1]} "
-                    f"(幅{len(g)}px, 長さ~{len(extent)}px, 偏差{dev[g].max():.1f})")
+                found.append(StreakInfo(
+                    orientation="horizontal", side=side,
+                    start=int(g[0]), end=int(g[-1]),
+                    length=int(len(extent)), max_dev=float(dev[g].max())))
 
-    for region in [
-        gray[OUTER_SKIP_PX:OUTER_SKIP_PX + sw, :],
-        gray[h - OUTER_SKIP_PX - sw:h - OUTER_SKIP_PX, :],
+    # 縦スジ: 上下ストリップで検出
+    for side, region in [
+        ("top", gray[OUTER_SKIP_PX:OUTER_SKIP_PX + sw, :]),
+        ("bottom", gray[h - OUTER_SKIP_PX - sw:h - OUTER_SKIP_PX, :]),
     ]:
         if region.size == 0 or region.shape[0] < 5:
             continue
@@ -298,20 +341,69 @@ def detect_streaks(gray: np.ndarray, prof: ScannerProfile) -> list[str]:
                 else np.full(h, means.mean())
             extent = np.where(np.abs(r_means - (ref_l+ref_r)/2) > th/2)[0]
             if len(extent) > h * prof.streak_min_length_ratio:
-                warnings.append(
-                    f"  縦スジ: cols {g[0]}-{g[-1]} "
-                    f"(幅{len(g)}px, 長さ~{len(extent)}px, 偏差{dev[g].max():.1f})")
-    return warnings
+                found.append(StreakInfo(
+                    orientation="vertical", side=side,
+                    start=int(g[0]), end=int(g[-1]),
+                    length=int(len(extent)), max_dev=float(dev[g].max())))
+
+    return found
+
+
+def draw_streak_arrows(img: np.ndarray, streaks: list[StreakInfo]) -> np.ndarray:
+    """検出したスジに斜めの矢印を描画した画像を返す。
+    矢印は内側 (本文側) から外側 (余白のスジ) に向ける。
+    スジの線と重ならないよう斜め方向にずらして描く。
+    """
+    annotated = img.copy()
+    if len(annotated.shape) == 2:
+        annotated = cv2.cvtColor(annotated, cv2.COLOR_GRAY2BGR)
+    h, w = annotated.shape[:2]
+
+    RED = (0, 0, 255)  # BGR
+    thickness = max(3, w // 700)
+    tip = 0.25
+    arrow_len = max(140, w // 11)   # 矢印の長さ (斜辺)
+    gap = max(20, w // 150)         # スジから矢印先端までの隙間
+    # 斜めにするためのオフセット (矢印の根元を主軸方向にずらす量)
+    skew = arrow_len * 0.8
+
+    for s in streaks:
+        if s.orientation == "horizontal":
+            row = (s.start + s.end) // 2
+            if s.side == "left":
+                # 左余白のスジ: 先端は左下、根元は右上 (斜め)
+                x_tip = OUTER_SKIP_PX + gap
+                tip_pt = (x_tip, row)
+                tail_pt = (int(x_tip + arrow_len), int(row - skew))
+            else:  # right
+                x_tip = w - OUTER_SKIP_PX - gap
+                tip_pt = (x_tip, row)
+                tail_pt = (int(x_tip - arrow_len), int(row - skew))
+            cv2.arrowedLine(annotated, tail_pt, tip_pt, RED, thickness, tipLength=tip)
+        else:  # vertical
+            col = (s.start + s.end) // 2
+            if s.side == "top":
+                y_tip = OUTER_SKIP_PX + gap
+                tip_pt = (col, y_tip)
+                tail_pt = (int(col - skew), int(y_tip + arrow_len))
+            else:  # bottom
+                y_tip = h - OUTER_SKIP_PX - gap
+                tip_pt = (col, y_tip)
+                tail_pt = (int(col - skew), int(y_tip - arrow_len))
+            cv2.arrowedLine(annotated, tail_pt, tip_pt, RED, thickness, tipLength=tip)
+
+    return annotated
 
 # ============================================================
 # 1ファイル処理
 # ============================================================
 
 def process_image(input_path_str: str, output_dir_str: str,
-                  prof_dict: dict) -> ProcessResult:
+                  line_detected_dir_str: str, prof_dict: dict) -> ProcessResult:
     prof = ScannerProfile(**prof_dict)
     input_path = Path(input_path_str)
     output_dir = Path(output_dir_str)
+    line_detected_dir = Path(line_detected_dir_str)
     filename = input_path.name
     stem = input_path.stem
     log = []
@@ -321,7 +413,7 @@ def process_image(input_path_str: str, output_dir_str: str,
         return ProcessResult(filename, "", "", (0,0), (0,0), 0, False,
                              {}, [], 0.0, False, "読み込み失敗")
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+    gray = to_gray(img)
     h, w = gray.shape
     cm = "カラー" if len(img.shape) == 3 else "グレースケール"
     log.append(f"処理中: {filename} ({w}x{h}, {cm})")
@@ -340,14 +432,22 @@ def process_image(input_path_str: str, output_dir_str: str,
     has_streaks = len(streaks) > 0
     if has_streaks:
         log.append("  ⚠ スジ警告:")
-        log.extend(streaks)
+        log.extend(s.describe() for s in streaks)
+        # クロップ前の元画像に矢印を描画して line-detected/ に保存
+        try:
+            annotated = draw_streak_arrows(img, streaks)
+            ld_path = line_detected_dir / f"{stem}.png"
+            cv2.imwrite(str(ld_path), annotated)
+            log.append(f"  スジ確認画像: line-detected/{stem}.png")
+        except Exception as e:
+            log.append(f"  [WARN] スジ確認画像の生成失敗: {e}")
 
-    tilt = estimate_tilt(edges, h, w) if prof.enable_tilt else 0.0
+    tilt = estimate_tilt(edges) if prof.enable_tilt else 0.0
     tilt_corrected = False
     if prof.enable_tilt and abs(tilt) >= prof.min_tilt_deg:
         log.append(f"  傾き補正: {tilt:.4f}°")
         img = rotate_image(img, tilt)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img.copy()
+        gray = to_gray(img)
         edges = detect_all_edges(gray, bg_med, prof)
         tilt_corrected = True
         h2, w2 = gray.shape
@@ -390,14 +490,6 @@ def process_image(input_path_str: str, output_dir_str: str,
     output_path = output_dir / output_name
     cv2.imwrite(str(output_path), cropped)
 
-    if has_streaks and not stem.endswith("-line"):
-        new_name = f"{stem}-line{input_path.suffix}"
-        try:
-            input_path.rename(input_path.parent / new_name)
-            log.append(f"  入力リネーム: {filename} → {new_name}")
-        except OSError as e:
-            log.append(f"  [WARN] リネーム失敗: {e}")
-
     pct = (1 - (cw * ch) / (w * h)) * 100
     log.append(f"  出力: {output_name} ({cw}x{ch}, AR={ar:.4f}, -{pct:.1f}%)")
 
@@ -408,7 +500,7 @@ def process_image(input_path_str: str, output_dir_str: str,
 # アス比・面積チェック
 # ============================================================
 
-def _rename_output(r: ProcessResult, suffix: str, log: list):
+def _rename_output(r: ProcessResult, suffix: str):
     old_path = Path(r.output_path)
     if not old_path.exists():
         return
@@ -454,11 +546,11 @@ def check_outliers(results: list[ProcessResult], sigma: float) -> list[str]:
         is_size = std_area > 1e-6 and area_dev > sigma * std_area
 
         if is_ratio:
-            _rename_output(r, "-ratio", log)
+            _rename_output(r, "-ratio")
             outliers.append(f"  [ratio] {r.output_name} "
                             f"(AR={r.aspect_ratio:.4f}, {ar_dev/std_ar:.1f}σ)")
         if is_size:
-            _rename_output(r, "-size", log)
+            _rename_output(r, "-size")
             outliers.append(f"  [size] {r.output_name} "
                             f"(面積={area:.0f}, {area_dev/std_area:.1f}σ)")
 
@@ -521,7 +613,7 @@ def write_log(results: list[ProcessResult], outlier_log: list[str],
             if r.streaks:
                 f.write("  ⚠ スジ:\n")
                 for sv in r.streaks:
-                    f.write(f"  {sv}\n")
+                    f.write(f"  {sv.describe()}\n")
             f.write("\n")
 
 # ============================================================
@@ -532,6 +624,7 @@ def run(prof: ScannerProfile, version: str):
     script_dir = Path(sys.argv[0]).resolve().parent
     input_dir = script_dir / "crop"
     output_dir = script_dir / "output"
+    line_detected_dir = script_dir / "line-detected"
     log_path = script_dir / "crop_result.txt"
 
     if not input_dir.is_dir():
@@ -544,6 +637,13 @@ def run(prof: ScannerProfile, version: str):
             if f.is_file():
                 f.unlink()
     output_dir.mkdir(exist_ok=True)
+
+    # line-detected/ を初期化 (output/ と同様、無条件でクリア)
+    if line_detected_dir.is_dir():
+        for f in line_detected_dir.iterdir():
+            if f.is_file():
+                f.unlink()
+    line_detected_dir.mkdir(exist_ok=True)
 
     files = sorted([
         f for f in input_dir.iterdir()
@@ -566,7 +666,8 @@ def run(prof: ScannerProfile, version: str):
     results = []
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(process_image, str(f), str(output_dir), prof_dict): f
+            pool.submit(process_image, str(f), str(output_dir),
+                        str(line_detected_dir), prof_dict): f
             for f in files
         }
         for fut in as_completed(futures):

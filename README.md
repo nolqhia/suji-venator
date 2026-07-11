@@ -16,8 +16,6 @@ Claude Opus 4.7 が書きました。
 
 `suji-venator` ("suji" = streak, Latin "venator" = hunter) is a post-processing tool for self-scanned book images. Its primary purpose is to **detect and flag streaks** caused by debris on the rollers or glass surface of ADF (Auto Document Feeder) scanners. It also automatically crops the scanner-background margins and corrects page skew.
 
-![sampleImage](sample.png)
-
 ---
 
 ## 特徴 / Features
@@ -46,8 +44,6 @@ Both assume **white-background scanners** (background is near-white to light gra
 
 - ADF では、スキャン範囲を紙より 5mm ほど大きく設定してください（余白部分でスジを検出するため）。/
   For ADF scans, set the scan area about 5mm larger than the paper (streaks are detected in the margin region).
-- 原稿はノド（綴じ側）を上にした横向きで ADF に給紙して、ドライバで回転させてください。これによりスジが横方向に出るため、左右の余白で検出できます。
-  Feed pages sideways into the ADF with the gutter (binding edge) facing up, and set rotate in driver. This makes streaks run horizontally, so they can be detected in the left/right margins.
 - Python 3.10 以上 / Python 3.10+
 - 依存ライブラリ / Dependencies: `opencv-python`, `numpy`, `scipy`
 
@@ -88,6 +84,8 @@ your-work-folder/
 │   └── 002.tif
 ├── output/            # 出力 / Output (auto-created, cleared each run)
 │   ├── 001.png
+│   └── 002.png
+├── line-detected/     # スジ確認用の矢印付き画像 / Streak-annotated images (auto-created, cleared each run)
 │   └── 002.png
 └── crop_result.txt    # 処理ログ / Processing log
 ```
@@ -136,14 +134,14 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 
 ## 既知の制約 / Known Limitations
 
-- **コントラストの弱いスジ**は検出できない場合があります。スジの輝度が余白の背景色とほぼ同じ場合、原理的に検出が困難です。その場合は `streak_threshold` を下げることで検出感度を上げられます（ただし誤検出が増える可能性があります）。
-  **Faint streaks** may go undetected. If a streak's brightness matches the margin background, detection is fundamentally difficult. In such cases, lowering `streak_threshold` increases sensitivity (at the cost of more false positives).
+- **コントラストの弱いスジ**は検出できない場合があります。スジの輝度が余白の背景色とほぼ同じ場合、原理的に検出が困難です。
+  **Faint streaks** may go undetected. If a streak's brightness matches the margin background, detection is fundamentally difficult.
 
-- **紙面コンテンツが端まで描かれている**漫画ページなどでは、紙面端の検出精度が落ちることがあります。その場合は `ScannerProfile` の各パラメータ（`shadow_range_high` や `ratio_sigma` など）を調整することで対応できます。
-  Edge detection accuracy may degrade on pages where **content extends to the paper edge** (e.g., full-bleed manga). When this happens, you can compensate by tuning the `ScannerProfile` parameters (such as `shadow_range_high` or `ratio_sigma`).
+- **紙面コンテンツが端まで描かれている**漫画ページなどでは、紙面端の検出精度が落ちることがあります。
+  Edge detection accuracy may degrade on pages where **content extends to the paper edge** (e.g., full-bleed manga).
 
-- スジ検出は**余白領域のみ**を対象とします。紙面内部（コンテンツ領域）を横切るスジは検出対象外です。しかしながら、原理的にそういったスジは余白部分にも現れるため、実用上は問題ないでしょう。
-  Streak detection only examines **margin regions**; streaks crossing the content area are out of scope. In practice, however, such streaks also appear in the margins, so this is rarely an issue.
+- スジ検出は**余白領域のみ**を対象とします。紙面内部（コンテンツ領域）を横切るスジは検出対象外です。
+  Streak detection only examines **margin regions**; streaks crossing the content area are out of scope.
 
 ---
 
