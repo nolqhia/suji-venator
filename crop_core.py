@@ -692,7 +692,9 @@ def process_image(input_path_str: str, output_dir_str: str,
     tilt_corrected = False
     if prof.enable_tilt and abs(tilt) >= prof.min_tilt_deg:
         log.append(f"  傾き補正: {tilt:.4f}°")
-        img = rotate_image(img, tilt)
+        # tilt は「検出した紙面の傾き」。打ち消すには逆向きに回す。
+        # 同符号で回すと傾きが倍になる (合成画像で dx/dy が 2 倍になることを確認)。
+        img = rotate_image(img, -tilt)
         gray = to_gray(img)
         if prof.region_detect:
             edges, _ = detect_paper_region(img, gray, prof)
