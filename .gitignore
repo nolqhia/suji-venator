@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# suji-venator: 作業用フォルダ (入出力・検証データ)
+crop/
+output/
+line-detected/
+crop_result.txt
+ERROR/
+TESTER/
