@@ -44,6 +44,7 @@ class ScannerProfile:
     enable_ratio_check: bool
     ratio_sigma: float
     color_dist_threshold: float = 25.0  # カラー入力時の背景色距離しきい値
+    region_detect: bool = False         # 領域分割で紙面を検出 (小さな原稿・低コントラスト)
 
 @dataclass
 class StreakInfo:
@@ -105,6 +106,12 @@ N_SAMPLES = 48
 # 片側にグレーの楔が残る。内側寄せで残グレーを抑える (歪みが無ければ
 # 全サンプル同値なので中央値と一致し、余計なロスは出ない)。
 CROP_INWARD_PCT = 92
+
+# 領域ベース検出 (region_detect) のパラメータ
+REGION_TARGET_W = 1200      # 縮小後の幅。ノイズを平均化しつつ処理を軽くする
+REGION_MIN_DELTA = 2.0      # 背景水準からの最小偏差 (階調)
+REGION_K_NOISE = 6.0        # ノイズ σ の何倍を偏差しきい値とするか
+REGION_CHROMA_THR = 8.0     # 彩度距離のしきい値 (カラー入力)
 
 # ============================================================
 # グレースケール変換
@@ -266,6 +273,176 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
     return EdgeResult(fallback, False)
 
 
+def _refine_edge(band: np.ndarray, side: str, coarse: int, search: int) -> int:
+    """1次元プロファイル上で粗い境界位置を精密化する。
+    外側/内側それぞれの水準を取り、その中点を横切る位置を境界とみなす。
+    紙が背景より暗くても明るくても動くよう、差の符号で向きを決める。
+    """
+    n = len(band)
+    inward = 1 if side in ("left", "top") else -1   # 内側へ進む向き
+    out_a, out_b = coarse - inward * 2 * search, coarse - inward * search
+    in_a, in_b = coarse + inward * search, coarse + inward * 2 * search
+    lo_out, hi_out = sorted((max(0, min(n, out_a)), max(0, min(n, out_b))))
+    lo_in, hi_in = sorted((max(0, min(n, in_a)), max(0, min(n, in_b))))
+    if hi_out - lo_out < 4 or hi_in - lo_in < 4:
+        return coarse
+    outside = float(np.median(band[lo_out:hi_out]))
+    inside = float(np.median(band[lo_in:hi_in]))
+    if abs(inside - outside) < 1e-6:
+        return coarse
+    mid = (outside + inside) / 2.0
+    sgn = 1.0 if inside > outside else -1.0
+
+    # 外側から内側へ走査し、紙面側の水準を数画素連続で超えた位置を境界とする
+    start = coarse - inward * search
+    run = 0
+    for k in range(2 * search):
+        i = start + inward * k
+        if i < 0 or i >= n:
+            break
+        if sgn * (band[i] - mid) > 0:
+            run += 1
+            if run >= 3:
+                return int(i - inward * (run - 1))
+        else:
+            run = 0
+    return coarse
+
+
+def _edge_line_angle(gf: np.ndarray, side: str, pos: int,
+                     lo: int, hi: int, search: int, nseg: int = 9):
+    """1辺を小区間に分けて境界を精密化し、直線を当てて傾きを求める。
+    最小外接矩形はプラテンのゴミが連結すると大きく狂うため、
+    実際の紙面境界そのものから角度を出す。符号は estimate_tilt と揃える。
+    """
+    step = (hi - lo) // nseg
+    if step < 8:
+        return None
+    idxs, vals = [], []
+    for i in range(nseg):
+        a = lo + i * step
+        b = a + step
+        band = (gf[a:b, :].mean(axis=0) if side in ("left", "right")
+                else gf[:, a:b].mean(axis=1))
+        idxs.append(a + step / 2.0)
+        vals.append(_refine_edge(band, side, pos, search))
+    idxs = np.array(idxs, dtype=float)
+    vals = np.array(vals, dtype=float)
+    q1, q3 = np.percentile(vals, [25, 75])
+    iqr = q3 - q1
+    m = (vals >= q1 - 1.5 * iqr) & (vals <= q3 + 1.5 * iqr)
+    if m.sum() < 4:
+        return None
+    slope = float(np.polyfit(idxs[m], vals[m], 1)[0])
+    ang = float(np.degrees(np.arctan(slope)))
+    # 縦辺は dx/dy、横辺は dy/dx。median で打ち消し合わないよう符号を揃える。
+    return ang if side in ("left", "right") else -ang
+
+
+def detect_paper_region(img: np.ndarray, gray: np.ndarray,
+                        prof: ScannerProfile) -> tuple:
+    """画像全体を領域分割して紙面の外接矩形を求める (フラットベッド向け)。
+
+    端から内側へ走査する方式は「紙面が画面の大半を占める」前提のため、
+    プラテン中央に置かれた小さな原稿には届かない (SCAN_DEPTH の外)。
+    また紙と背景の輝度差が数階調しかない場合、単画素走査ではノイズに埋もれる。
+    ここでは縮小画像でノイズを平均化し、背景水準からの偏差でマスクを作って
+    最大連結成分を紙面とみなす。外周のビネット (枠状に暗い成分) は除外する。
+    境界は全解像度のプロファイルで精密化する。
+
+    戻り値: (Edges, 傾き角度[deg])
+    """
+    h, w = gray.shape
+    scale = REGION_TARGET_W / float(w)
+    sw = REGION_TARGET_W
+    sh = max(1, int(round(h * scale)))
+    small = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
+    g = to_gray(small).astype(np.float32)
+    is_color = small.ndim == 3 and small.shape[2] >= 3
+
+    # 背景 (プラテン) の水準。上位パーセンタイルなので紙やビネットに引かれない。
+    bg_level = float(np.percentile(g, 80))
+    # ノイズは高周波成分から推定 (ビネットのような緩やかな変化を含めない)
+    hf = g - cv2.GaussianBlur(g, (0, 0), 2.0)
+    noise = max(float(np.median(np.abs(hf))) * 1.4826, 0.15)
+    thr = max(REGION_MIN_DELTA, REGION_K_NOISE * noise)
+
+    mask = np.abs(g - bg_level) > thr
+    if is_color:
+        bgr = small[:, :, :3].astype(np.float32)
+        sel = np.abs(g - bg_level) < 2.0
+        bg_col = (np.median(bgr[sel].reshape(-1, 3), axis=0) if sel.sum() > 100
+                  else np.median(bgr.reshape(-1, 3), axis=0))
+        delta = bgr - bg_col
+        chroma = delta - delta.mean(axis=2, keepdims=True)
+        mask |= np.sqrt((chroma ** 2).sum(axis=2)) > REGION_CHROMA_THR
+
+    mask = mask.astype(np.uint8)
+    kc = max(3, int(round(min(sw, sh) * 0.012)) | 1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((kc, kc), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    failed = Edges(EdgeResult(0, False), EdgeResult(w - 1, False),
+                   EdgeResult(0, False), EdgeResult(h - 1, False))
+    if n <= 1:
+        return failed, 0.0
+
+    best = None
+    min_area = 0.001 * sw * sh          # 0.1% 未満はゴミとみなす
+    for li in (np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1] + 1):
+        x, y, cw, ch, area = stats[li]
+        if area < min_area:
+            break
+        # 外周のビネット (枠状に暗い領域) を除外する。
+        # 枠は四辺すべてに接し、かつ中心が穴になっている点で紙面と区別できる。
+        # 紙面が全面に及ぶ場合は中心も成分に含まれるので除外されない。
+        spans_all = (x <= 1 and y <= 1 and x + cw >= sw - 1 and y + ch >= sh - 1)
+        if spans_all and lab[(y + ch // 2), (x + cw // 2)] != li:
+            continue
+        best = (li, x, y, cw, ch)
+        break
+    if best is None:
+        return failed, 0.0
+    li, sx, sy, scw, sch = best
+
+    inv = 1.0 / scale
+    x1 = int(round(sx * inv)); x2 = int(round((sx + scw) * inv))
+    y1 = int(round(sy * inv)); y2 = int(round((sy + sch) * inv))
+    x1 = max(0, min(w - 1, x1)); x2 = max(1, min(w, x2))
+    y1 = max(0, min(h - 1, y1)); y2 = max(1, min(h, y2))
+
+    # 全解像度での境界精密化。直交方向は紙面の中央60%だけ使う (角の影を避ける)
+    # 探索半径は closing の外向きバイアス (カーネル幅) を確実に覆う大きさにする。
+    gf = gray.astype(np.float32)
+    search = max(16, int(round(kc * inv * 2)))
+    ry1, ry2 = y1 + (y2 - y1) // 5, y2 - (y2 - y1) // 5
+    rx1, rx2 = x1 + (x2 - x1) // 5, x2 - (x2 - x1) // 5
+    if ry2 - ry1 >= 4:
+        band_h = gf[ry1:ry2, :].mean(axis=0)
+        x1 = _refine_edge(band_h, "left", x1, search)
+        x2 = _refine_edge(band_h, "right", x2, search)
+    if rx2 - rx1 >= 4:
+        band_v = gf[:, rx1:rx2].mean(axis=1)
+        y1 = _refine_edge(band_v, "top", y1, search)
+        y2 = _refine_edge(band_v, "bottom", y2, search)
+
+    # 傾きは四辺それぞれに直線を当てて求め、その中央値を使う
+    angles = []
+    for side, pos, lo, hi in (("left", x1, ry1, ry2), ("right", x2, ry1, ry2),
+                              ("top", y1, rx1, rx2), ("bottom", y2, rx1, rx2)):
+        if hi - lo < 4:
+            continue
+        a = _edge_line_angle(gf, side, pos, lo, hi, search)
+        if a is not None:
+            angles.append(a)
+    angle = float(np.median(angles)) if angles else 0.0
+
+    edges = Edges(EdgeResult(int(x1), True), EdgeResult(int(x2), True),
+                  EdgeResult(int(y1), True), EdgeResult(int(y2), True))
+    return edges, angle
+
+
 def detect_all_edges(gray: np.ndarray, bg_med: float, prof: ScannerProfile,
                      img_color: np.ndarray = None,
                      bg_color: np.ndarray = None) -> Edges:
@@ -307,7 +484,10 @@ def estimate_tilt(edges: Edges) -> float:
 # ============================================================
 
 def rotate_image(img: np.ndarray, angle_deg: float) -> np.ndarray:
-    """TODO: 安定したら BORDER_REPLICATE に切り替え。"""
+    """回転後の外側は BORDER_REPLICATE で埋める。
+    黒 (BORDER_CONSTANT) だと回転後の四隅の黒い楔が「背景と大きく異なる領域」
+    となり、再検出でそこを紙面と誤認する。端の色を複製すれば背景が延長される。
+    """
     h, w = img.shape[:2]
     center = (w / 2, h / 2)
     mat = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
@@ -319,8 +499,7 @@ def rotate_image(img: np.ndarray, angle_deg: float) -> np.ndarray:
     return cv2.warpAffine(
         img, mat, (new_w, new_h),
         flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0) if len(img.shape) == 3 else 0,
+        borderMode=cv2.BORDER_REPLICATE,
     )
 
 # ============================================================
@@ -478,8 +657,12 @@ def process_image(input_path_str: str, output_dir_str: str,
     else:
         log.append(f"  背景色: {bg_med:.0f}")
 
-    edges = detect_all_edges(gray, bg_med, prof,
-                             img if is_color else None, bg_color)
+    region_angle = None
+    if prof.region_detect:
+        edges, region_angle = detect_paper_region(img, gray, prof)
+    else:
+        edges = detect_all_edges(gray, bg_med, prof,
+                                 img if is_color else None, bg_color)
     edges_info = {}
     for name, e in [("左", edges.left), ("右", edges.right),
                     ("上", edges.top), ("下", edges.bottom)]:
@@ -500,14 +683,22 @@ def process_image(input_path_str: str, output_dir_str: str,
         except Exception as e:
             log.append(f"  [WARN] スジ確認画像の生成失敗: {e}")
 
-    tilt = estimate_tilt(edges) if prof.enable_tilt else 0.0
+    if not prof.enable_tilt:
+        tilt = 0.0
+    elif region_angle is not None:
+        tilt = region_angle
+    else:
+        tilt = estimate_tilt(edges)
     tilt_corrected = False
     if prof.enable_tilt and abs(tilt) >= prof.min_tilt_deg:
         log.append(f"  傾き補正: {tilt:.4f}°")
         img = rotate_image(img, tilt)
         gray = to_gray(img)
-        edges = detect_all_edges(gray, bg_med, prof,
-                                 img if is_color else None, bg_color)
+        if prof.region_detect:
+            edges, _ = detect_paper_region(img, gray, prof)
+        else:
+            edges = detect_all_edges(gray, bg_med, prof,
+                                     img if is_color else None, bg_color)
         tilt_corrected = True
         h2, w2 = gray.shape
         log.append(f"  再検出 (回転後 {w2}x{h2}):")

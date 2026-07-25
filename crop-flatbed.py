@@ -24,6 +24,7 @@ PROFILE = ScannerProfile(
     enable_ratio_check=False,
     ratio_sigma=2.0,
     color_dist_threshold=25.0,
+    region_detect=True,
 )
 
 if __name__ == "__main__":

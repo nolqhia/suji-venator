@@ -145,6 +145,9 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 - **紙面コンテンツが端まで描かれている**漫画ページなどでは、紙面端の検出精度が落ちることがあります。その場合は `ScannerProfile` の各パラメータ（`shadow_range_high` や `ratio_sigma` など）を調整することで対応できます。
   Edge detection accuracy may degrade on pages where **content extends to the paper edge** (e.g., full-bleed manga). When this happens, you can compensate by tuning the `ScannerProfile` parameters (such as `shadow_range_high` or `ratio_sigma`).
 
+- フラットベッドでは、原稿をプラテンの**外周（ビネットで暗くなる帯）から離して**置いてください。原稿が暗い外周に接していると、両者が一つの領域として繋がり検出に失敗することがあります。
+  On the flatbed, place the document **away from the darker vignetted border** of the platen. If the document touches that border, the two can merge into one region and detection may fail.
+
 - スジ検出は**余白領域のみ**を対象とします。紙面内部（コンテンツ領域）を横切るスジは検出対象外です。しかしながら、原理的にそういったスジは余白部分にも現れるため、実用上は問題ないでしょう。
   Streak detection only examines **margin regions**; streaks crossing the content area are out of scope. In practice, however, such streaks also appear in the margins, so this is rarely an issue.
 
@@ -161,6 +164,7 @@ Key parameters can be adjusted in the `ScannerProfile` at the top of each script
 | `shadow_dip_threshold` | 影ディップ判定の深さ（右辺の影除去） / Shadow dip depth (right-edge shadow removal) |
 | `streak_threshold` | スジ判定の輝度偏差。下げると敏感、上げると保守的 / Streak deviation threshold |
 | `color_dist_threshold` | カラー入力時の紙面判定に使う彩度距離。色付き紙が背景と等輝度でも分離できる / Chroma-distance threshold for paper detection (color input) |
+| `region_detect` | 端から走査せず画像全体を領域分割して紙面を検出。プラテン中央に置いた小さな原稿や、紙と背景の輝度差が小さい場合に有効（フラットベッドで既定 ON） / Detect the paper by segmenting the whole image instead of scanning inward from the borders (default ON for flatbed) |
 | `adf_margin_px` | クロップ後の追加カット量 / Extra crop after edge detection |
 | `ratio_sigma` | アス比・面積の外れ値判定の σ 倍数 / Sigma multiplier for outlier detection |
 
