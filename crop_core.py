@@ -112,6 +112,7 @@ REGION_TARGET_W = 1200      # 縮小後の幅。ノイズを平均化しつつ�
 REGION_MIN_DELTA = 2.0      # 背景水準からの最小偏差 (階調)
 REGION_K_NOISE = 6.0        # ノイズ σ の何倍を偏差しきい値とするか
 REGION_CHROMA_THR = 8.0     # 彩度距離のしきい値 (カラー入力)
+REGION_MAX_WORKERS = 4      # 大判画像のメモリ消費を抑える並列上限
 
 # ============================================================
 # グレースケール変換
@@ -309,7 +310,7 @@ def _refine_edge(band: np.ndarray, side: str, coarse: int, search: int) -> int:
     return coarse
 
 
-def _edge_line_angle(gf: np.ndarray, side: str, pos: int,
+def _edge_line_angle(gray: np.ndarray, side: str, pos: int,
                      lo: int, hi: int, search: int, nseg: int = 9):
     """1辺を小区間に分けて境界を精密化し、直線を当てて傾きを求める。
     最小外接矩形はプラテンのゴミが連結すると大きく狂うため、
@@ -322,8 +323,9 @@ def _edge_line_angle(gf: np.ndarray, side: str, pos: int,
     for i in range(nseg):
         a = lo + i * step
         b = a + step
-        band = (gf[a:b, :].mean(axis=0) if side in ("left", "right")
-                else gf[:, a:b].mean(axis=1))
+        band = (gray[a:b, :].mean(axis=0, dtype=np.float32)
+                if side in ("left", "right")
+                else gray[:, a:b].mean(axis=1, dtype=np.float32))
         idxs.append(a + step / 2.0)
         vals.append(_refine_edge(band, side, pos, search))
     idxs = np.array(idxs, dtype=float)
@@ -353,10 +355,11 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
     戻り値: (Edges, 傾き角度[deg])
     """
     h, w = gray.shape
-    scale = REGION_TARGET_W / float(w)
-    sw = REGION_TARGET_W
+    scale = min(1.0, REGION_TARGET_W / float(w))
+    sw = max(1, int(round(w * scale)))
     sh = max(1, int(round(h * scale)))
-    small = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
+    small = (img if scale == 1.0
+             else cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA))
     g = to_gray(small).astype(np.float32)
     is_color = small.ndim == 3 and small.shape[2] >= 3
 
@@ -369,7 +372,11 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
 
     mask = np.abs(g - bg_level) > thr
     if is_color:
-        bgr = small[:, :, :3].astype(np.float32)
+        bgr_src = small[:, :, :3]
+        if bgr_src.dtype == np.uint16:
+            bgr = (bgr_src >> 8).astype(np.float32)
+        else:
+            bgr = bgr_src.astype(np.float32)
         sel = np.abs(g - bg_level) < 2.0
         bg_col = (np.median(bgr[sel].reshape(-1, 3), axis=0) if sel.sum() > 100
                   else np.median(bgr.reshape(-1, 3), axis=0))
@@ -414,16 +421,15 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
 
     # 全解像度での境界精密化。直交方向は紙面の中央60%だけ使う (角の影を避ける)
     # 探索半径は closing の外向きバイアス (カーネル幅) を確実に覆う大きさにする。
-    gf = gray.astype(np.float32)
     search = max(16, int(round(kc * inv * 2)))
     ry1, ry2 = y1 + (y2 - y1) // 5, y2 - (y2 - y1) // 5
     rx1, rx2 = x1 + (x2 - x1) // 5, x2 - (x2 - x1) // 5
     if ry2 - ry1 >= 4:
-        band_h = gf[ry1:ry2, :].mean(axis=0)
+        band_h = gray[ry1:ry2, :].mean(axis=0, dtype=np.float32)
         x1 = _refine_edge(band_h, "left", x1, search)
         x2 = _refine_edge(band_h, "right", x2, search)
     if rx2 - rx1 >= 4:
-        band_v = gf[:, rx1:rx2].mean(axis=1)
+        band_v = gray[:, rx1:rx2].mean(axis=1, dtype=np.float32)
         y1 = _refine_edge(band_v, "top", y1, search)
         y2 = _refine_edge(band_v, "bottom", y2, search)
 
@@ -433,7 +439,7 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
                               ("top", y1, rx1, rx2), ("bottom", y2, rx1, rx2)):
         if hi - lo < 4:
             continue
-        a = _edge_line_angle(gf, side, pos, lo, hi, search)
+        a = _edge_line_angle(gray, side, pos, lo, hi, search)
         if a is not None:
             angles.append(a)
     angle = float(np.median(angles)) if angles else 0.0
@@ -474,8 +480,9 @@ def estimate_tilt(edges: Edges) -> float:
             continue
         fit = np.polyfit(indices[mask], values[mask], 1)
         ang = np.degrees(np.arctan(fit[0]))
-        # 紙が θ 回転すると縦エッジの dx/dy は -tanθ、横エッジの dy/dx は
-        # +tanθ になる。符号を揃えないと median で打ち消し合う。
+        # OpenCV の画像座標 (y軸が下向き) で紙を正角 θ 回転すると、
+        # 縦エッジの dx/dy は +tanθ、横エッジの dy/dx は -tanθ になる。
+        # 横辺の符号を反転しないと median で打ち消し合う。
         angles.append(ang if is_vert else -ang)
     return float(np.median(angles)) if angles else 0.0
 
@@ -933,6 +940,8 @@ def run(prof: ScannerProfile, version: str):
         print("[WARN] scipy 未インストール → スジ検出無効")
 
     workers = max(1, multiprocessing.cpu_count() - 1)
+    if prof.region_detect:
+        workers = min(workers, REGION_MAX_WORKERS)
     print(f"並列処理: {workers} プロセス")
 
     prof_dict = prof.__dict__
