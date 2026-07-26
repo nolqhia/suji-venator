@@ -112,6 +112,7 @@ REGION_TARGET_W = 1200      # 縮小後の幅。ノイズを平均化しつつ�
 REGION_MIN_DELTA = 2.0      # 背景水準からの最小偏差 (階調)
 REGION_K_NOISE = 6.0        # ノイズ σ の何倍を偏差しきい値とするか
 REGION_CHROMA_THR = 8.0     # 彩度距離のしきい値 (カラー入力)
+REGION_MIN_EDGE_STEP = 1.0  # 紙面端と認めるのに必要な境界直近の段差 (階調)
 REGION_MAX_WORKERS = 4      # 大判画像のメモリ消費を抑える並列上限
 
 # ============================================================
@@ -341,6 +342,46 @@ def _edge_line_angle(gray: np.ndarray, side: str, pos: int,
     return ang if side in ("left", "right") else -ang
 
 
+def _border_bg_level(g: np.ndarray) -> float:
+    """画像端から連結した領域 (=プラテン) の上位パーセンタイルを背景水準として返す。
+    近傍差のフラッドフィルは緩やかな照明むら (ビネット) を辿り、
+    紙面の段差で止まる。段差が小さく紙面へ漏れても、紙が少数派なら値は背景側に残る。
+    領域を端連結に限ることで、明るい紙が画面の過半を占めても基準が紙側へ移らない。
+    その中で上位パーセンタイルを取るのは、ビネットの暗い帯に引かれないため。
+    端連結領域が極端に狭いときだけ画像全体の上位パーセンタイルに退避する。
+    """
+    sh, sw = g.shape
+    g8 = cv2.GaussianBlur(g, (0, 0), 1.5)
+    g8 = np.clip(g8, 0, 255).astype(np.uint8)
+    ff = np.zeros((sh + 2, sw + 2), np.uint8)
+    flags = 4 | cv2.FLOODFILL_MASK_ONLY | (1 << 8)
+    step = max(1, min(sw, sh) // 40)
+    seeds = ([(x, 0) for x in range(0, sw, step)] +
+             [(x, sh - 1) for x in range(0, sw, step)] +
+             [(0, y) for y in range(0, sh, step)] +
+             [(sw - 1, y) for y in range(0, sh, step)])
+    for sx, sy in seeds:
+        if ff[sy + 1, sx + 1]:
+            continue
+        cv2.floodFill(g8, ff, (sx, sy), 0, 2, 2, flags)
+    m = ff[1:-1, 1:-1] > 0
+    if m.sum() < 0.02 * sw * sh:
+        return float(np.percentile(g, 80))
+    return float(np.percentile(g[m], 80))
+
+
+def _near_edge_step(band: np.ndarray, pos: int, half: int = 6, gap: int = 2) -> float:
+    """境界位置の直近だけで測る段差の大きさ。
+    実際の紙面端は数画素で段差が立つが、照明むらの等高線ではほぼ 0 になる。
+    """
+    n = len(band)
+    a0, a1 = max(0, pos - half), max(0, pos - gap)
+    b0, b1 = min(n, pos + gap), min(n, pos + half)
+    if a1 - a0 < 2 or b1 - b0 < 2:
+        return 0.0
+    return abs(float(np.median(band[b0:b1])) - float(np.median(band[a0:a1])))
+
+
 def detect_paper_region(img: np.ndarray, gray: np.ndarray,
                         prof: ScannerProfile) -> tuple:
     """画像全体を領域分割して紙面の外接矩形を求める (フラットベッド向け)。
@@ -363,8 +404,11 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
     g = to_gray(small).astype(np.float32)
     is_color = small.ndim == 3 and small.shape[2] >= 3
 
-    # 背景 (プラテン) の水準。上位パーセンタイルなので紙やビネットに引かれない。
-    bg_level = float(np.percentile(g, 80))
+    # 背景 (プラテン) の水準。
+    # 単純な上位パーセンタイルだと、明るい紙が画面の過半を占めたときに
+    # 基準が紙側へ移り、紙ではなく外側がマスクされてしまう。
+    # 画像端から連結した領域 = プラテンとみなして中央値を取る。
+    bg_level = _border_bg_level(g)
     # ノイズは高周波成分から推定 (ビネットのような緩やかな変化を含めない)
     hf = g - cv2.GaussianBlur(g, (0, 0), 2.0)
     noise = max(float(np.median(np.abs(hf))) * 1.4826, 0.15)
@@ -424,6 +468,7 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
     search = max(16, int(round(kc * inv * 2)))
     ry1, ry2 = y1 + (y2 - y1) // 5, y2 - (y2 - y1) // 5
     rx1, rx2 = x1 + (x2 - x1) // 5, x2 - (x2 - x1) // 5
+    band_h = band_v = None
     if ry2 - ry1 >= 4:
         band_h = gray[ry1:ry2, :].mean(axis=0, dtype=np.float32)
         x1 = _refine_edge(band_h, "left", x1, search)
@@ -432,6 +477,17 @@ def detect_paper_region(img: np.ndarray, gray: np.ndarray,
         band_v = gray[:, rx1:rx2].mean(axis=1, dtype=np.float32)
         y1 = _refine_edge(band_v, "top", y1, search)
         y2 = _refine_edge(band_v, "bottom", y2, search)
+
+    # 境界の急峻さを検証する。照明むら (ビネット) の等高線をマスクの縁として
+    # 拾っただけの場合、そこには段差が無い。これを弾かないと存在しない領域を
+    # 「検出成功」として黙って切り出してしまう。
+    steps = []
+    if band_h is not None:
+        steps += [_near_edge_step(band_h, x1), _near_edge_step(band_h, x2)]
+    if band_v is not None:
+        steps += [_near_edge_step(band_v, y1), _near_edge_step(band_v, y2)]
+    if not steps or float(np.median(steps)) < REGION_MIN_EDGE_STEP:
+        return failed, 0.0
 
     # 傾きは四辺それぞれに直線を当てて求め、その中央値を使う
     angles = []

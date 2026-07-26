@@ -148,6 +148,9 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 - フラットベッドでは、原稿をプラテンの**外周（ビネットで暗くなる帯）から離して**置いてください。原稿が暗い外周に接していると、両者が一つの領域として繋がり検出に失敗することがあります。
   On the flatbed, place the document **away from the darker vignetted border** of the platen. If the document touches that border, the two can merge into one region and detection may fail.
 
+- フラットベッドの領域検出（`region_detect`）は**1画像に原稿1枚**を前提とします。複数枚を並べて置いた場合、最も大きい1枚だけが切り出されます。また画面面積の 0.1% 未満の極小な原稿は検出対象外です。
+  Flatbed region detection assumes **one document per image**. If several are placed side by side, only the largest is cropped. Documents smaller than 0.1% of the image area are not detected.
+
 - スジ検出は**余白領域のみ**を対象とします。紙面内部（コンテンツ領域）を横切るスジは検出対象外です。しかしながら、原理的にそういったスジは余白部分にも現れるため、実用上は問題ないでしょう。
   Streak detection only examines **margin regions**; streaks crossing the content area are out of scope. In practice, however, such streaks also appear in the margins, so this is rarely an issue.
 
