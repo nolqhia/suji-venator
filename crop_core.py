@@ -113,6 +113,7 @@ REGION_MIN_DELTA = 2.0      # 背景水準からの最小偏差 (階調)
 REGION_K_NOISE = 6.0        # ノイズ σ の何倍を偏差しきい値とするか
 REGION_CHROMA_THR = 8.0     # 彩度距離のしきい値 (カラー入力)
 REGION_MIN_EDGE_STEP = 1.0  # 紙面端と認めるのに必要な境界直近の段差 (階調)
+WHITE_EDGE_LEVEL = 250      # 画像端の白帯 (スキャナ由来の縁) とみなす輝度
 REGION_MAX_WORKERS = 4      # 大判画像のメモリ消費を抑える並列上限
 
 # ============================================================
@@ -165,6 +166,20 @@ def estimate_background_color(img: np.ndarray) -> np.ndarray:
 # ============================================================
 # エッジ検出
 # ============================================================
+
+def _saturated_edge_run(line: np.ndarray, from_start: bool, limit: int) -> int:
+    """走査線の端から続く飽和 (>=WHITE_EDGE_LEVEL) 画素の長さを返す。
+    スキャナ/ドライバが画像の縁に付ける白帯を読み飛ばすために使う。
+    """
+    n = len(line)
+    run = 0
+    i = 0 if from_start else n - 1
+    stepv = 1 if from_start else -1
+    while 0 <= i < n and run < limit and line[i] >= WHITE_EDGE_LEVEL:
+        i += stepv
+        run += 1
+    return run
+
 
 def _detect_edge_one_side(gray: np.ndarray, side: str,
                           bg_med: float, prof: ScannerProfile,
@@ -222,12 +237,19 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
         else:
             is_paper = (line < s_low) | (line > s_high)
 
+        # 画像端の飽和 (255) 帯はスキャナ/ドライバ由来の縁であって紙面ではない。
+        # ADF は紙より広い範囲をスキャンする前提なので、最外周は必ず背景側。
+        # この帯が OUTER_SKIP_PX より厚いと走査開始点が帯の中に入り、
+        # そこを紙面端と誤認する (実測で 27px の帯により下端が 57px ずれた)。
+        edge_skip = OUTER_SKIP_PX + _saturated_edge_run(
+            line, side in ("left", "top"), min(SCAN_DEPTH // 4, length // 10))
+
         # Stage 1: 外側から走査し、紙面の最初のピクセルを見つける
         if side in ("left", "top"):
-            scan_range = range(OUTER_SKIP_PX, OUTER_SKIP_PX + depth)
+            scan_range = range(edge_skip, edge_skip + depth)
         else:
-            scan_range = range(length - OUTER_SKIP_PX - 1,
-                               length - OUTER_SKIP_PX - depth - 1, -1)
+            scan_range = range(length - edge_skip - 1,
+                               length - edge_skip - depth - 1, -1)
 
         first_paper = None
         for i in scan_range:
