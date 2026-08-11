@@ -101,11 +101,6 @@ CORNER_SIZE = 40
 OUTER_SKIP_PX = 15
 SCAN_DEPTH = 500
 N_SAMPLES = 48
-# クロップ位置は紙面境界の中央値ではなく内側寄りのパーセンタイルを使う。
-# 紙が僅かに歪む/湾曲すると横エッジが完全な水平にならず、中央値で切ると
-# 片側にグレーの楔が残る。内側寄せで残グレーを抑える (歪みが無ければ
-# 全サンプル同値なので中央値と一致し、余計なロスは出ない)。
-CROP_INWARD_PCT = 92
 
 # 領域ベース検出 (region_detect) のパラメータ
 REGION_TARGET_W = 1200      # 縮小後の幅。ノイズを平均化しつつ処理を軽くする
@@ -289,9 +284,10 @@ def _detect_edge_one_side(gray: np.ndarray, side: str,
 
     if len(samples) >= N_SAMPLES * 0.4:
         positions = np.array([p for _, p in samples])
-        # 紙面の内側寄りで切ってグレーの楔を残さない
-        q = CROP_INWARD_PCT if side in ("left", "top") else 100 - CROP_INWARD_PCT
-        return EdgeResult(int(np.percentile(positions, q)), True, samples)
+        # 中央値を採る。内側寄りのパーセンタイルは、紙面いっぱいに絵柄がある
+        # ページで外れサンプルに引かれ、絵を削ってしまう。
+        # 製本紙のぼやけた端に対する内側寄せは領域検出側 (_refine_edge) が担う。
+        return EdgeResult(int(np.median(positions)), True, samples)
 
     fallback = {"left": 0, "right": w - 1, "top": 0, "bottom": h - 1}[side]
     return EdgeResult(fallback, False)
