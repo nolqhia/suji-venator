@@ -12,9 +12,13 @@ Claude Code / Codex で書きました。
 
 `suji-venator`（スジ・ヴェナトール = スジ狩人）は、自炊（書籍の自己電子化）で生じるスキャン画像を後処理するツールです。主な目的は、ADF（自動給紙）スキャナのローラーやガラス面に付着したゴミ由来の**スジ（筋）を検出して警告する**ことです。あわせて、スキャナのガラス面背景に生じる余白を自動でクロップし、紙面の傾きを補正します。
 
+スキャナドライバにもガラス面の汚れ検知機能がありますが、取りこぼしが多く実用になりませんでした。そこで、スキャン後の画像から余白のスジを直接検出する方式にしています。
+
 **English**
 
 `suji-venator` ("suji" = streak, Latin "venator" = hunter) is a post-processing tool for self-scanned book images. Its primary purpose is to **detect and flag streaks** caused by debris on the rollers or glass surface of ADF (Auto Document Feeder) scanners. It also automatically crops the scanner-background margins and corrects page skew.
+
+Scanner drivers do offer glass-dirt detection, but it missed too much to rely on. This tool instead detects streaks directly in the margins of the scanned image.
 
 ![sampleImage](sample.png)
 
@@ -45,8 +49,8 @@ Both assume **white-background scanners** (background is near-white to light gra
 
 ## 動作要件 / Requirements
 
-- ADF では、スキャン範囲を紙より 5mm ほど大きく設定してください（余白部分でスジを検出するため）。/
-  For ADF scans, set the scan area about 5mm larger than the paper (streaks are detected in the margin region).
+- ADF では、スキャン範囲を紙より 5mm ほど大きく設定してください。スジ検出は画像端から 15〜75px の帯を調べるため、そこが紙面ではなくスキャナ背景である必要があります（600dpi で約3.2mm、400dpi で約4.8mm に相当。低解像度ではもう少し広めに）。
+  For ADF scans, set the scan area about 5mm larger than the paper. Streak detection examines a band 15–75 px in from the image edge, and that band must fall on the scanner background rather than the paper (about 3.2 mm at 600 dpi, 4.8 mm at 400 dpi; allow more at lower resolutions).
 - 原稿はノド（綴じ側）を上にした横向きで ADF に給紙して、ドライバで回転させてください。これによりスジが横方向に出るため、左右の余白で検出できます。
   Feed pages sideways into the ADF with the gutter (binding edge) facing up, and set rotate in driver. This makes streaks run horizontally, so they can be detected in the left/right margins.
 - Python 3.10 以上 / Python 3.10+
@@ -161,6 +165,9 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 
 - スジ検出は**余白領域のみ**を対象とします。紙面内部（コンテンツ領域）を横切るスジは検出対象外です。しかしながら、原理的にそういったスジは余白部分にも現れるため、実用上は問題ないでしょう。
   Streak detection only examines **margin regions**; streaks crossing the content area are out of scope. In practice, however, such streaks also appear in the margins, so this is rarely an issue.
+
+- **単体 .exe を配布しない理由**: `ScannerProfile` のパラメータをスキャナや原稿に合わせて編集して使う前提のツールのため、スクリプトのまま配布しています。また opencv / numpy / scipy を同梱すると 150〜400MB になり、起動も遅くなります。
+  **Why there is no standalone .exe**: the tool is meant to be used by editing the `ScannerProfile` parameters for your scanner and material, so it ships as plain scripts. Bundling opencv / numpy / scipy would also produce a 150–400 MB binary with slow startup.
 
 ---
 
