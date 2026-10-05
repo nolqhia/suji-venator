@@ -70,6 +70,26 @@ The cropped page goes to `output/`, with `-line` appended to the filename when a
 
 ---
 
+## フラットベッド対応について / Flatbed Support（調整中 / Work in Progress）
+
+**日本語**
+
+`crop-flatbed.py` は現在調整中です。
+
+狙いは、**プラテンに紙を適当に置いても使えるようにする**ことです。原稿の傾きを補正したうえで余白を切り抜くため、スキャナに紙をまっすぐ正確に置く必要がなくなります。画集の 1 ページでも、帯やカードのような小さな紙片でも、プラテンのどこに置いても構いません。
+
+そのため、**スキャン範囲はプラテン全体に設定してください**。紙がどこにあるか分からない前提で画像全体から紙面を探すので、スキャン範囲を紙に合わせて絞ってしまうと意味がなくなります。
+
+**English**
+
+`crop-flatbed.py` is still being tuned.
+
+The goal is to let you **place the paper casually on the platen**: the tool corrects the skew and then crops the margins, so there is no need to align the sheet precisely. A page from an art book, or a small strip such as an obi, can sit anywhere on the glass.
+
+For this to work, **set the scan area to the entire platen**. The tool searches the whole image for the paper on the assumption that its position is unknown, so narrowing the scan area to the sheet defeats the purpose.
+
+---
+
 ## 特徴 / Features
 
 - **スジ検出 / Streak detection**: 余白領域の輝度偏差から縦筋・横筋を検出し、該当ファイル名に `-line` を付加
