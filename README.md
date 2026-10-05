@@ -24,6 +24,30 @@ Scanner drivers do offer glass-dirt detection, but it missed too much to rely on
 
 ---
 
+## 仕組み / How It Works
+
+**日本語**
+
+任意の絵柄の中からスジを見つけるのは不良設定問題です。線画や網点とスジを一般的に区別する方法はなく、無理に試みれば誤検出だらけになります。
+
+一方、ローラーやガラス面に由来するスジは**搬送経路に固定された欠陥**なので、スキャン方向に全長にわたって現れます。そこで本ツールは、紙より 5mm 広くスキャンして**既知の無地領域を意図的に作り**、そこだけを調べます。背景が平坦なため「局所中央値からの偏差」という単純な判定で足り、ADF プロファイルでは **4階調**の偏差まで拾えます。絵柄の中でこの感度は使えません。
+
+余白でスジが見つかれば、同じスジは紙面上も横切っています。したがって余白だけを調べれば実用上は十分です。
+
+**つまり「紙より 5mm 広くスキャンする」は妥協や回避策ではなく、問題を解ける形に変えている中核の前提です。**
+
+**English**
+
+Finding a streak inside arbitrary artwork is an ill-posed problem: there is no general way to tell a streak from line art or halftone, and attempting it produces mostly false positives.
+
+Streaks from rollers or the glass surface, however, are **defects fixed in the paper path**, so they run the full length of the scan. This tool therefore scans about 5 mm wider than the paper to **deliberately create a known-blank observation window**, and looks only there. Because that region is flat, a simple "deviation from the local median" test suffices — sensitive enough to catch a **4-gray-level** deviation in the ADF profile, which would be unusable inside artwork.
+
+If a streak appears in the margin, the same streak also crosses the page. Examining only the margin is therefore sufficient in practice.
+
+**In short, scanning 5 mm wider is not a workaround — it is the core premise that makes the problem tractable.**
+
+---
+
 ## 特徴 / Features
 
 - **スジ検出 / Streak detection**: 余白領域の輝度偏差から縦筋・横筋を検出し、該当ファイル名に `-line` を付加
