@@ -48,6 +48,28 @@ If a streak appears in the margin, the same streak also crosses the page. Examin
 
 ---
 
+## 実行例 / Example Output
+
+スジを検出すると、検出位置を指す赤い矢印を描いた確認用画像が `line-detected/` に出力されます。
+When a streak is found, an annotated copy with red arrows pointing at it is written to `line-detected/`.
+
+![スジ検出の例](sample-detected-160.png)
+
+目視では気づきにくいスジも同じように検出されます。
+Streaks that are easy to miss by eye are detected just the same.
+
+![見落としやすいスジの例](sample-detected-086.png)
+
+切り出し後の画像は `output/` に出力されます。スジが検出されたページはファイル名に `-line` が付きます。
+The cropped page goes to `output/`, with `-line` appended to the filename when a streak was detected.
+
+![切り出し後の出力](sample-output-160.png)
+
+> 掲載した画像は、紙面の内容にモザイク処理を施しています（スジと紙面の境目が分かるよう、該当部分は残しています）。
+> The page content in these images is pixelated; the streak and the paper edge are left intact so they remain visible.
+
+---
+
 ## 特徴 / Features
 
 - **スジ検出 / Streak detection**: 余白領域の輝度偏差から縦筋・横筋を検出し、該当ファイル名に `-line` を付加
