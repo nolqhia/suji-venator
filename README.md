@@ -80,6 +80,8 @@ The cropped page goes to `output/`, with `-line` appended to the filename when a
 
 そのため、**スキャン範囲はプラテン全体に設定してください**。紙がどこにあるか分からない前提で画像全体から紙面を探すので、スキャン範囲を紙に合わせて絞ってしまうと意味がなくなります。
 
+ただし、**プラテンの角に突き当てて置かないでください**。スキャン可能範囲は物理的な角まで届いていないことが多く、スキャナの指示どおり角に合わせると紙の端が範囲外になって切れてしまいます。写っていないものは後から復元できません。また紙の端が画像の端に接すると、その辺には背景が写らないため紙面端を検出できず、その辺はクロップされません。**四辺すべてに背景が写る位置（プラテンの中央寄り）に置いてください。**
+
 **English**
 
 `crop-flatbed.py` is still being tuned.
@@ -87,6 +89,8 @@ The cropped page goes to `output/`, with `-line` appended to the filename when a
 The goal is to let you **place the paper casually on the platen**: the tool corrects the skew and then crops the margins, so there is no need to align the sheet precisely. A page from an art book, or a small strip such as an obi, can sit anywhere on the glass.
 
 For this to work, **set the scan area to the entire platen**. The tool searches the whole image for the paper on the assumption that its position is unknown, so narrowing the scan area to the sheet defeats the purpose.
+
+Do **not** butt the sheet into the corner of the platen, however. The scannable area usually does not reach the physical corner, so aligning the paper to it as the scanner instructs leaves part of the sheet outside the captured area — and what was never captured cannot be recovered. A paper edge flush with the image border also leaves no background on that side, so that edge cannot be detected or cropped. **Place the sheet so that background is visible on all four sides (toward the middle of the platen).**
 
 ---
 
