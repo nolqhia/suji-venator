@@ -23,8 +23,9 @@ Claude Opus 4.7 が書きました。
 ## 特徴 / Features
 
 - **スジ検出 / Streak detection**: 余白領域の輝度偏差から縦筋・横筋を検出し、該当ファイル名に `-line` を付加
-- **余白除去 / Margin cropping**: 背景色ベースで紙面端を検出し、ガラス面の余白を除去
+- **余白除去 / Margin cropping**: 紙面端を検出してガラス面の余白を除去。ADF は端から内側へ走査し、フラットベッドは画像全体を領域分割して検出します
 - **傾き補正 / Skew correction**: 検出した紙面端から傾きを推定し回転補正（フラットベッド向け）
+- **検出失敗の通知 / Failure flagging**: 紙面端を検出できなかった場合は黙って画像端にフォールバックせず、`-edge` を付けて警告
 - **異常検出 / Outlier detection**: 出力のアスペクト比・面積を統計的に集計し、外れ値に `-ratio` / `-size` を付加
 - **並列処理 / Parallel processing**: 複数CPUコアでバッチ処理を高速化
 
@@ -95,6 +96,9 @@ your-work-folder/
 ```
 
 対応入力形式 / Supported input formats: `.png`, `.tif`, `.tiff`, `.bmp`
+グレースケール・カラー・アルファ付き（BGRA）・16bit に対応します。検出は 8bit グレースケールに変換して行いますが、クロップは元画像に対して行うため、出力は入力の bit 深度とチャンネルを保持します。
+Grayscale, color, alpha (BGRA) and 16-bit inputs are supported. Detection runs on an 8-bit grayscale copy, while cropping is applied to the original, so the output keeps the input's bit depth and channels.
+
 出力は常に PNG / Output is always PNG.
 
 > **注意 / Note**: `output/` は実行のたびに中身が削除されます。
@@ -124,6 +128,7 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 
 | 項目 / Item | `crop-adf.py` | `crop-flatbed.py` |
 |---|---|---|
+| 紙面検出 / Paper detection | 端から内側へ走査 / Scan inward from borders | 領域分割 / Whole-image segmentation*** |
 | 傾き補正 / Skew correction | 無効 / Off* | 有効 / On |
 | スジ検出 / Streak detection | 有効 / On | 無効 / Off** |
 | 追加マージン / Extra margin | 8px | なし / None |
@@ -134,6 +139,9 @@ Multiple issues are concatenated (e.g., `088-ratio-size.png`).
 
 \*\* フラットベッドにはADF由来のスジが発生しないためです。
    Flatbed scans do not produce ADF-style streaks.
+
+\*\*\* 端からの走査は紙面が画面の大半を占める前提のため、プラテン中央に置いた小さな原稿には届きません。フラットベッドでは画像全体を領域分割して紙面を探します（`region_detect`）。
+   Scanning inward assumes the paper fills most of the frame, so it cannot reach a small document placed in the middle of the platen. The flatbed profile segments the whole image instead (`region_detect`).
 
 ---
 
