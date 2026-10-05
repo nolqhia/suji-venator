@@ -76,21 +76,21 @@ The cropped page goes to `output/`, with `-line` appended to the filename when a
 
 `crop-flatbed.py` は現在調整中です。
 
-狙いは、**プラテンに紙を適当に置いても使えるようにする**ことです。原稿の傾きを補正したうえで余白を切り抜くため、スキャナに紙をまっすぐ正確に置く必要がなくなります。画集の 1 ページでも、帯やカードのような小さな紙片でも、プラテンのどこに置いても構いません。
+発端は、**プラテンの角に突き当てて置くと紙の端が切れてしまう**ことでした。スキャン可能範囲は物理的な角まで届いていないことが多く、スキャナの指示どおり角に合わせると紙の端が範囲外になります。写っていないものは後処理では復元できません。
 
-そのため、**スキャン範囲はプラテン全体に設定してください**。紙がどこにあるか分からない前提で画像全体から紙面を探すので、スキャン範囲を紙に合わせて絞ってしまうと意味がなくなります。
+そこで、角には寄せず**プラテンの中央寄りに適当に置く**ことにします。ただしそうすると、紙の位置も角度も毎回変わります。この「どこに、どの角度で置かれているか分からない」状態を引き受けるのがフラットベッド側の処理です。画像全体から紙面を検出し、傾きを補正したうえで余白を切り抜きます。画集の 1 ページでも、帯やカードのような小さな紙片でも構いません。
 
-ただし、**プラテンの角に突き当てて置かないでください**。スキャン可能範囲は物理的な角まで届いていないことが多く、スキャナの指示どおり角に合わせると紙の端が範囲外になって切れてしまいます。写っていないものは後から復元できません。また紙の端が画像の端に接すると、その辺には背景が写らないため紙面端を検出できず、その辺はクロップされません。**四辺すべてに背景が写る位置（プラテンの中央寄り）に置いてください。**
+そのため、**スキャン範囲はプラテン全体に設定してください**。紙の位置が未知である前提で画像全体を探すので、スキャン範囲を紙に合わせて絞ると意味がなくなります。また、紙の端が画像の端に接するとその辺には背景が写らず、紙面端を検出できないためその辺はクロップされません。**四辺すべてに背景が写る位置に置いてください。**
 
 **English**
 
 `crop-flatbed.py` is still being tuned.
 
-The goal is to let you **place the paper casually on the platen**: the tool corrects the skew and then crops the margins, so there is no need to align the sheet precisely. A page from an art book, or a small strip such as an obi, can sit anywhere on the glass.
+It started from a practical problem: **butting the sheet into the corner of the platen cuts off its edge.** The scannable area usually does not reach the physical corner, so aligning the paper as the scanner instructs leaves part of the sheet outside the captured area — and what was never captured cannot be recovered.
 
-For this to work, **set the scan area to the entire platen**. The tool searches the whole image for the paper on the assumption that its position is unknown, so narrowing the scan area to the sheet defeats the purpose.
+The answer is to place the sheet loosely, **toward the middle of the platen** instead. That, however, means its position and angle differ every time. Absorbing that uncertainty is exactly what the flatbed path does: it finds the paper anywhere in the image, corrects the skew, and crops the margins. A page from an art book or a small strip such as an obi works equally well.
 
-Do **not** butt the sheet into the corner of the platen, however. The scannable area usually does not reach the physical corner, so aligning the paper to it as the scanner instructs leaves part of the sheet outside the captured area — and what was never captured cannot be recovered. A paper edge flush with the image border also leaves no background on that side, so that edge cannot be detected or cropped. **Place the sheet so that background is visible on all four sides (toward the middle of the platen).**
+For this, **set the scan area to the entire platen**. The tool searches the whole image on the assumption that the paper's position is unknown, so narrowing the scan area to the sheet defeats the purpose. A paper edge flush with the image border also leaves no background on that side, so that edge cannot be detected or cropped. **Place the sheet so that background is visible on all four sides.**
 
 ---
 
