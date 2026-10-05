@@ -2,7 +2,7 @@
 
 **ADF 自炊スキャン画像の縦筋・横筋（スジ）を検出し、余白を自動除去するツール**
 **Detects vertical/horizontal streaks in self-scanned images and auto-crops margins**
-Claude Opus 4.7 が書きました。
+Claude Code / Codex で書きました。
 
 ---
 
